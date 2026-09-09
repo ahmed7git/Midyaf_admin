@@ -15,67 +15,101 @@ on:
 
 jobs:
   build:
-    name: Build iOS IPA (Unsigned)
+    name: Build iOS IPA & Runner.app (Unsigned)
     runs-on: macos-15
 
     steps:
 
       # =========================================================
-      # Checkout
+      # 1. استرجاع الكود المصدري
       # =========================================================
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       # =========================================================
-      # Xcode
+      # 2. تحديد بيئة Xcode
       # =========================================================
-
-      - name: Select Xcode 26.3
+      - name: Select Xcode Toolchain
         run: |
           set -e
 
-          XCODE_PATH="/Applications/Xcode_26.3.app"
+          echo "========================================"
+          echo "DETECTING XCODE VERSION"
+          echo "========================================"
 
-          if [ ! -d "$XCODE_PATH" ]; then
-            echo "ERROR: Xcode 26.3 was not found."
-            ls -la /Applications/ | grep Xcode || true
+          if [ -d "/Applications/Xcode_16.2.app" ]; then
+            XCODE_PATH="/Applications/Xcode_16.2.app"
+
+          elif [ -d "/Applications/Xcode_16.1.app" ]; then
+            XCODE_PATH="/Applications/Xcode_16.1.app"
+
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            XCODE_PATH="/Applications/Xcode_16.0.app"
+
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            XCODE_PATH="/Applications/Xcode_15.4.app"
+
+          elif [ -d "/Applications/Xcode.app" ]; then
+            XCODE_PATH="/Applications/Xcode.app"
+
+          else
+            XCODE_PATH=$(find /Applications \
+              -maxdepth 1 \
+              -name "Xcode*.app" \
+              | sort -V \
+              | tail -n 1)
+          fi
+
+          if [ -z "$XCODE_PATH" ] || [ ! -d "$XCODE_PATH" ]; then
+            echo "ERROR: No valid Xcode installation found."
+            ls -la /Applications/ | grep -i Xcode || true
             exit 1
           fi
+
+          echo "Selected Xcode: $XCODE_PATH"
 
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
           echo "========================================"
-          echo "XCODE"
+          echo "XCODE DETAILS"
           echo "========================================"
 
           xcode-select -p
           xcodebuild -version
 
-          echo ""
           echo "========================================"
-          echo "SWIFT"
+          echo "SWIFT VERSION"
           echo "========================================"
 
           swift --version
 
-          echo ""
           echo "========================================"
-          echo "IOS SDK"
+          echo "IOS SDK VERSION"
           echo "========================================"
 
           xcodebuild -showsdks | grep -i "iOS" || true
 
-      # =========================================================
-      # Flutter
-      # =========================================================
 
+      # =========================================================
+      # 3. تثبيت Flutter
+      # =========================================================
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+
+      # =========================================================
+      # 4. إعداد Flutter
+      #
+      # مهم:
+      # Flutter 3.47.2 يفعّل Swift Package Manager افتراضيًا.
+      #
+      # مشروعنا يستخدم CocoaPods لأن:
+      # google_maps_flutter_ios
+      # لا يدعم Swift Package Manager في البيئة الحالية.
+      # =========================================================
       - name: Configure Flutter
         run: |
           set -e
@@ -83,81 +117,147 @@ jobs:
           git config --global http.postBuffer 1048576000
           git config --global http.version HTTP/1.1
 
-          flutter config --enable-swift-package-manager
-
           echo "========================================"
-          echo "FLUTTER"
+          echo "FLUTTER VERSION"
           echo "========================================"
 
           flutter --version
 
-      # =========================================================
-      # Mapbox
-      # =========================================================
+          echo "========================================"
+          echo "DISABLING SWIFT PACKAGE MANAGER"
+          echo "========================================"
 
-      - name: Configure Mapbox Credentials
+          flutter config --no-enable-swift-package-manager
+
+          echo "========================================"
+          echo "FLUTTER CONFIG"
+          echo "========================================"
+
+          flutter config
+
+
+      # =========================================================
+      # 5. إعداد بيانات Mapbox الاختيارية
+      # =========================================================
+      - name: Configure Mapbox Credentials (Optional)
         env:
           SDK_REGISTRY_TOKEN: ${{ secrets.SDK_REGISTRY_TOKEN }}
+
         run: |
           set -e
 
-          if [ -z "$SDK_REGISTRY_TOKEN" ]; then
-            echo "ERROR: SDK_REGISTRY_TOKEN is missing."
-            exit 1
-          fi
+          if [ -n "$SDK_REGISTRY_TOKEN" ]; then
 
-          cat > "$HOME/.netrc" <<EOF
+            cat > "$HOME/.netrc" <<EOF
           machine api.mapbox.com
           login mapbox
           password ${SDK_REGISTRY_TOKEN}
           EOF
 
-          chmod 600 "$HOME/.netrc"
+            chmod 600 "$HOME/.netrc"
 
-          echo "Mapbox SDK credentials configured."
+            echo "Mapbox SDK credentials configured."
+
+          else
+
+            echo "No SDK_REGISTRY_TOKEN provided."
+            echo "Continuing with default configuration."
+
+          fi
+
 
       # =========================================================
-      # Flutter Dependencies
+      # 6. تنزيل Dependencies
       # =========================================================
-
       - name: Install Flutter Dependencies
         run: |
           set -e
+
+          echo "========================================"
+          echo "FLUTTER PUB GET"
+          echo "========================================"
+
           flutter pub get
 
-      # =========================================================
-      # Clean
-      # =========================================================
 
+      # =========================================================
+      # 7. تنظيف بيئة iOS
+      # =========================================================
       - name: Clean iOS Build
         run: |
           set -e
 
           echo "========================================"
-          echo "CLEANING"
+          echo "CLEANING IOS BUILD"
           echo "========================================"
 
           flutter clean
 
           rm -rf build/ios_build
+
           rm -rf ios/Pods
+
           rm -rf ios/.symlinks
+
+          rm -rf ios/Flutter/ephemeral
+
           rm -f ios/Podfile.lock
 
           flutter pub get
 
-          echo "Clean completed."
 
       # =========================================================
-      # Prepare iOS
+      # 8. التحقق من ملفات مشروع iOS
       # =========================================================
+      - name: Verify iOS Project
+        run: |
+          set -e
 
+          echo "========================================"
+          echo "VERIFYING IOS PROJECT"
+          echo "========================================"
+
+          if [ ! -d "ios" ]; then
+            echo "ERROR: ios directory does not exist."
+            exit 1
+          fi
+
+          if [ ! -f "ios/Runner.xcodeproj/project.pbxproj" ]; then
+            echo "ERROR: Xcode project file not found."
+            echo "Expected:"
+            echo "ios/Runner.xcodeproj/project.pbxproj"
+            exit 1
+          fi
+
+          if [ ! -f "ios/Podfile" ]; then
+            echo "ERROR: ios/Podfile not found."
+            exit 1
+          fi
+
+          if [ ! -f "ios/Flutter/Debug.xcconfig" ]; then
+            echo "WARNING: Debug.xcconfig not found."
+          fi
+
+          if [ ! -f "ios/Flutter/Release.xcconfig" ]; then
+            echo "WARNING: Release.xcconfig not found."
+          fi
+
+          echo "iOS project files verified."
+
+
+      # =========================================================
+      # 9. تجهيز مشروع iOS وحقن Dart Defines
+      #
+      # SPM معطل قبل هذه الخطوة.
+      # Flutter سيستخدم CocoaPods.
+      # =========================================================
       - name: Prepare iOS Project
         env:
           SERVER_URL: ${{ secrets.SERVER_URL }}
-          MOYASAR_PUBLISHABLE_KEY: ${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
-          AI_RAG_API_URL: ${{ secrets.AI_RAG_API_URL }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+
         run: |
           set -e
 
@@ -165,32 +265,44 @@ jobs:
           echo "PREPARING IOS PROJECT"
           echo "========================================"
 
+          echo "========================================"
+          echo "VERIFYING SWIFT PACKAGE MANAGER STATUS"
+          echo "========================================"
+
+          flutter config
+
+          echo "========================================"
+          echo "BUILDING IOS CONFIGURATION"
+          echo "========================================"
+
           flutter build ios \
             --release \
             --no-codesign \
             --config-only \
             --dart-define=SERVER_URL="${SERVER_URL:-https://wicmn.alwaysdata.net/delever}" \
-            --dart-define=MOYASAR_PUBLISHABLE_KEY="${MOYASAR_PUBLISHABLE_KEY}" \
             --dart-define=MAPBOX_ACCESS_TOKEN="${MAPBOX_ACCESS_TOKEN}" \
-            --dart-define=AI_RAG_API_URL="${AI_RAG_API_URL:-https://delever-rag-service.vercel.app/api/ask-ai}"
+            --dart-define=GOOGLE_MAPS_API_KEY="${GOOGLE_MAPS_API_KEY}" \
+            --dart-define=APP_SECRET_KEY="${APP_SECRET_KEY}"
 
-          echo "Flutter iOS project prepared."
+          echo "========================================"
+          echo "FLUTTER IOS PROJECT PREPARED"
+          echo "========================================"
+
 
       # =========================================================
-      # CocoaPods
+      # 10. تثبيت CocoaPods
       # =========================================================
-
       - name: Install CocoaPods Dependencies
         run: |
           set -e
 
           echo "========================================"
-          echo "COCOAPODS"
+          echo "INSTALLING COCOAPODS"
           echo "========================================"
 
           cd ios
 
-          pod install --no-repo-update
+          pod install --repo-update
 
           cd ..
 
@@ -204,15 +316,17 @@ jobs:
             exit 1
           fi
 
-          echo "Podfile.lock:"
-          ls -lh ios/Podfile.lock
+          if [ ! -f "ios/Runner.xcworkspace/contents.xcworkspacedata" ]; then
+            echo "ERROR: Runner.xcworkspace was not created correctly."
+            exit 1
+          fi
 
-          echo "Pods directory exists."
+          echo "Pods installed successfully."
+
 
       # =========================================================
-      # Build
+      # 11. بناء تطبيق iOS Release بدون Codesign
       # =========================================================
-
       - name: Build iOS Release
         run: |
           set +e
@@ -220,7 +334,7 @@ jobs:
           mkdir -p build
 
           echo "========================================"
-          echo "XCODE BUILD"
+          echo "STARTING XCODEBUILD"
           echo "========================================"
 
           xcodebuild \
@@ -236,64 +350,67 @@ jobs:
             COMPILER_INDEX_STORE_ENABLE=NO \
             PODS_PODFILE_DIR_PATH="$GITHUB_WORKSPACE/ios" \
             PODS_ROOT="$GITHUB_WORKSPACE/ios/Pods" \
-            -skipPackagePluginValidation \
             -showBuildTimingSummary \
             2>&1 | tee build/ios_build.log
 
           BUILD_EXIT_CODE=${PIPESTATUS[0]}
 
-          echo ""
           echo "========================================"
-          echo "BUILD RESULT"
-          echo "========================================"
-
-          echo "Exit code: $BUILD_EXIT_CODE"
-
-          echo ""
-          echo "========================================"
-          echo "ERRORS"
+          echo "BUILD RESULT: Exit code $BUILD_EXIT_CODE"
           echo "========================================"
 
-          grep -nE \
-            "error:|fatal error:|BUILD FAILED|Command .* failed|SwiftCompile.*failed|CompileSwift.*failed" \
-            build/ios_build.log || true
+          if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
 
-          echo ""
-          echo "========================================"
-          echo "LAST 100 LOG LINES"
-          echo "========================================"
+            echo "========================================"
+            echo "ERRORS FOUND IN BUILD LOG"
+            echo "========================================"
 
-          tail -n 100 build/ios_build.log || true
+            grep -nE \
+              "error:|fatal error:|BUILD FAILED|Command .* failed|SwiftCompile.*failed|CompileSwift.*failed" \
+              build/ios_build.log || true
 
-          exit "$BUILD_EXIT_CODE"
+            echo "========================================"
+            echo "LAST 150 LOG LINES"
+            echo "========================================"
+
+            tail -n 150 build/ios_build.log || true
+
+            exit "$BUILD_EXIT_CODE"
+
+          fi
+
 
       # =========================================================
-      # Create Proper IPA
+      # 12. العثور على Runner.app
       # =========================================================
-
-      - name: Package Unsigned IPA
+      - name: Locate Runner.app
         if: success()
         run: |
           set -e
 
           echo "========================================"
-          echo "CREATING IPA"
+          echo "LOCATING RUNNER.APP"
           echo "========================================"
 
           APP_PATH="build/ios_build/Build/Products/Release-iphoneos/Runner.app"
 
           if [ ! -d "$APP_PATH" ]; then
-            echo "Expected Runner.app not found."
-            echo "Searching..."
+
+            echo "Runner.app not found at default path."
+            echo "Searching derived data..."
 
             APP_PATH=$(find build/ios_build \
               -type d \
               -name "Runner.app" \
               | head -n 1)
+
           fi
 
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+
             echo "ERROR: Runner.app was not found."
+
+            echo "Available .app files:"
 
             find build/ios_build \
               -type d \
@@ -301,48 +418,64 @@ jobs:
               -print || true
 
             exit 1
+
           fi
 
-          echo ""
-          echo "Runner.app:"
+          echo "Found Runner.app at:"
           echo "$APP_PATH"
 
-          # =======================================================
-          # Remove previous files
-          # =======================================================
+          echo "$APP_PATH" > runner_app_path.txt
 
+
+      # =========================================================
+      # 13. تحزيم Runner.app و Runner.ipa
+      # =========================================================
+      - name: Package Unsigned IPA and Runner.app
+        if: success()
+        run: |
+          set -e
+
+          APP_PATH=$(cat runner_app_path.txt)
+
+          echo "========================================"
+          echo "PACKAGING IOS ARTIFACTS"
+          echo "========================================"
+
+          # -------------------------------------------------------
+          # Runner.app.zip
+          # -------------------------------------------------------
+          echo "Creating Runner.app.zip..."
+
+          rm -f Runner.app.zip
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            "$APP_PATH" \
+            Runner.app.zip
+
+
+          # -------------------------------------------------------
+          # Runner.ipa
+          # -------------------------------------------------------
           rm -rf ipa_work
-          rm -f Runner.ipa
 
-          # =======================================================
-          # Create exact IPA structure
-          #
-          # ipa_work/
-          #   Payload/
-          #     Runner.app/
-          # =======================================================
+          rm -f Runner.ipa
 
           mkdir -p "ipa_work/Payload"
 
-          echo ""
-          echo "Copying Runner.app..."
+          echo "Copying Runner.app into Payload..."
 
-          ditto "$APP_PATH" "ipa_work/Payload/Runner.app"
+          ditto \
+            "$APP_PATH" \
+            "ipa_work/Payload/Runner.app"
 
-          # =======================================================
-          # Verify application before packaging
-          # =======================================================
 
-          echo ""
-          echo "========================================"
-          echo "VERIFYING APP"
-          echo "========================================"
-
-          if [ ! -d "ipa_work/Payload/Runner.app" ]; then
-            echo "ERROR: Runner.app was not copied."
-            exit 1
-          fi
-
+          # -------------------------------------------------------
+          # التحقق من الملفات الأساسية
+          # -------------------------------------------------------
           if [ ! -f "ipa_work/Payload/Runner.app/Runner" ]; then
             echo "ERROR: Runner executable does not exist."
             exit 1
@@ -353,133 +486,86 @@ jobs:
             exit 1
           fi
 
-          echo "Runner.app exists."
-          echo "Runner executable exists."
-          echo "Info.plist exists."
 
-          # =======================================================
-          # Create IPA
-          #
-          # We enter ipa_work so Payload is at the archive root.
-          # =======================================================
-
-          echo ""
-          echo "========================================"
-          echo "CREATING RUNNER.IPA"
-          echo "========================================"
+          # -------------------------------------------------------
+          # إنشاء IPA
+          # -------------------------------------------------------
+          echo "Packaging Runner.ipa..."
 
           cd ipa_work
 
-          ditto -c -k --sequesterRsrc --keepParent \
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
             Payload \
             ../Runner.ipa
 
           cd ..
 
-          # =======================================================
-          # Remove working directory
-          # =======================================================
-
           rm -rf ipa_work
 
-          # =======================================================
-          # Verify IPA exists
-          # =======================================================
 
-          echo ""
+          # =======================================================
+          # فحص IPA
+          # =======================================================
           echo "========================================"
-          echo "VERIFYING IPA"
+          echo "VERIFYING RUNNER.IPA"
           echo "========================================"
 
-          if [ ! -f "Runner.ipa" ]; then
-            echo "ERROR: Runner.ipa was not created."
-            exit 1
-          fi
-
-          ls -lh Runner.ipa
-
-          # =======================================================
-          # Verify ZIP
-          # =======================================================
-
-          echo ""
-          echo "Testing ZIP integrity..."
+          ls -lh Runner.ipa Runner.app.zip
 
           unzip -t Runner.ipa
 
-          # =======================================================
-          # Show structure
-          # =======================================================
-
-          echo ""
-          echo "========================================"
-          echo "IPA CONTENTS"
-          echo "========================================"
-
-          unzip -l Runner.ipa | head -n 80
-
-          # =======================================================
-          # Required IPA structure
-          # =======================================================
-
-          echo ""
-          echo "========================================"
-          echo "CHECKING IPA STRUCTURE"
-          echo "========================================"
-
-          if ! unzip -l Runner.ipa | grep -q "Payload/Runner.app/"; then
-            echo "ERROR: Payload/Runner.app was not found."
-            exit 1
-          fi
-
           if ! unzip -l Runner.ipa | grep -q "Payload/Runner.app/Runner"; then
-            echo "ERROR: Runner executable was not found."
+            echo "ERROR: Runner executable not found in Runner.ipa."
             exit 1
           fi
 
-          if ! unzip -l Runner.ipa | grep -q "Payload/Runner.app/Info.plist"; then
-            echo "ERROR: Info.plist was not found."
-            exit 1
-          fi
-
-          echo ""
           echo "========================================"
-          echo "IPA VALIDATION SUCCESS"
+          echo "SUCCESS"
           echo "========================================"
 
-          echo "Payload/Runner.app/       OK"
-          echo "Payload/Runner.app/Runner OK"
-          echo "Info.plist                OK"
+          echo "Runner.ipa created successfully."
+          echo "Runner.app.zip created successfully."
 
-          echo ""
-          echo "========================================"
-          echo "IPA CREATED SUCCESSFULLY"
-          echo "========================================"
-
-          ls -lh Runner.ipa
 
       # =========================================================
-      # Upload Build Log
+      # 14. رفع سجل البناء
       # =========================================================
-
       - name: Upload Build Log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: iOS-Build-Log
-          path: build/ios_build.log
+          path: |
+            build/ios_build.log
           if-no-files-found: ignore
           retention-days: 14
 
-      # =========================================================
-      # Upload IPA
-      # =========================================================
 
+      # =========================================================
+      # 15. رفع IPA
+      # =========================================================
       - name: Upload IPA Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Runner-ipa
           path: Runner.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+
+      # =========================================================
+      # 16. رفع Runner.app
+      # =========================================================
+      - name: Upload Runner.app Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runner-app
+          path: Runner.app.zip
           if-no-files-found: error
           retention-days: 14
