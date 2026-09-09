@@ -93,7 +93,7 @@ jobs:
       # =========================================================
       # 4. إعداد Flutter
       #
-      # لا نقوم بتفعيل Swift Package Manager هنا.
+      # لا نقوم بتفعيل Swift Package Manager يدويًا.
       # المشروع يستخدم CocoaPods بسبب google_maps_flutter_ios.
       # =========================================================
       - name: Configure Flutter
@@ -273,6 +273,12 @@ jobs:
 
       # =========================================================
       # 11. فحص إعدادات Xcode
+      #
+      # تم إضافة:
+      # -destination "generic/platform=iOS"
+      #
+      # حتى يستطيع xcodebuild العثور على Destination
+      # عند فحص Build Settings.
       # =========================================================
       - name: Verify Xcode Build Settings
         run: |
@@ -286,6 +292,7 @@ jobs:
             -workspace ios/Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \
+            -destination "generic/platform=iOS" \
             -showBuildSettings \
             > build_settings.log 2>&1
 
@@ -492,6 +499,7 @@ jobs:
           echo "========================================"
           echo "SUCCESS"
           echo "========================================"
+
           echo "Runner.ipa created successfully."
           echo "Runner.app.zip created successfully."
 
