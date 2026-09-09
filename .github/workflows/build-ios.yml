@@ -5,12 +5,10 @@ on:
     branches:
       - main
       - master
-
   pull_request:
     branches:
       - main
       - master
-
   workflow_dispatch:
 
 jobs:
@@ -19,7 +17,6 @@ jobs:
     runs-on: macos-15
 
     steps:
-
       # =========================================================
       # 1. استرجاع الكود المصدري
       # =========================================================
@@ -27,46 +24,62 @@ jobs:
         uses: actions/checkout@v4
 
       # =========================================================
-      # 2. تحديد بيئة Xcode
+      # 2. تحديد Xcode مع التحقق من iOS SDK فعليًا
       # =========================================================
       - name: Select Xcode Toolchain
+        shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "DETECTING XCODE VERSION"
+          echo "DETECTING XCODE WITH AVAILABLE IOS SDK"
           echo "========================================"
 
-          if [ -d "/Applications/Xcode_16.2.app" ]; then
-            XCODE_PATH="/Applications/Xcode_16.2.app"
+          XCODE_PATH=""
 
-          elif [ -d "/Applications/Xcode_16.1.app" ]; then
-            XCODE_PATH="/Applications/Xcode_16.1.app"
+          while IFS= read -r candidate; do
+            [ -z "$candidate" ] && continue
 
-          elif [ -d "/Applications/Xcode_16.0.app" ]; then
-            XCODE_PATH="/Applications/Xcode_16.0.app"
+            echo "Checking: $candidate"
 
-          elif [ -d "/Applications/Xcode_15.4.app" ]; then
-            XCODE_PATH="/Applications/Xcode_15.4.app"
+            if [ ! -d "$candidate/Contents/Developer" ]; then
+              continue
+            fi
 
-          elif [ -d "/Applications/Xcode.app" ]; then
-            XCODE_PATH="/Applications/Xcode.app"
+            sudo xcode-select -s "$candidate/Contents/Developer"
 
-          else
-            XCODE_PATH=$(find /Applications \
+            if SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" &&
+               [ -d "$SDK_PATH" ]; then
+
+              SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || true)"
+
+              if [ -n "$SDK_VERSION" ]; then
+                XCODE_PATH="$candidate"
+                echo "Selected Xcode: $XCODE_PATH"
+                echo "Selected iOS SDK: $SDK_VERSION"
+                echo "SDK path: $SDK_PATH"
+                break
+              fi
+            fi
+          done < <(
+            find /Applications \
               -maxdepth 1 \
+              -type d \
               -name "Xcode*.app" \
-              | sort -V \
-              | tail -n 1)
-          fi
+              | sort -V -r
+          )
 
-          if [ -z "$XCODE_PATH" ] || [ ! -d "$XCODE_PATH" ]; then
-            echo "ERROR: No valid Xcode installation found."
-            ls -la /Applications/ | grep -i Xcode || true
+          if [ -z "$XCODE_PATH" ]; then
+            echo "ERROR: No Xcode installation with a valid iPhoneOS SDK was found."
+            echo "Installed Xcode versions:"
+            find /Applications \
+              -maxdepth 1 \
+              -type d \
+              -name "Xcode*.app" \
+              -print \
+              | sort -V -r || true
             exit 1
           fi
-
-          echo "Selected Xcode: $XCODE_PATH"
 
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
@@ -84,11 +97,12 @@ jobs:
           swift --version
 
           echo "========================================"
-          echo "IOS SDK VERSION"
+          echo "AVAILABLE IOS SDK"
           echo "========================================"
 
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
           xcodebuild -showsdks | grep -i "iOS" || true
-
 
       # =========================================================
       # 3. تثبيت Flutter
@@ -99,29 +113,19 @@ jobs:
           channel: stable
           cache: true
 
-
       # =========================================================
       # 4. إعداد Flutter
       #
-      # مهم:
-      # Flutter 3.47.2 يفعّل Swift Package Manager افتراضيًا.
-      #
-      # مشروعنا يستخدم CocoaPods لأن:
-      # google_maps_flutter_ios
-      # لا يدعم Swift Package Manager في البيئة الحالية.
+      # Flutter 3.47.x يفعّل Swift Package Manager افتراضيًا.
+      # المشروع يعتمد على CocoaPods.
       # =========================================================
       - name: Configure Flutter
+        shell: bash
         run: |
           set -e
 
           git config --global http.postBuffer 1048576000
           git config --global http.version HTTP/1.1
-
-          echo "========================================"
-          echo "FLUTTER VERSION"
-          echo "========================================"
-
-          flutter --version
 
           echo "========================================"
           echo "DISABLING SWIFT PACKAGE MANAGER"
@@ -130,11 +134,16 @@ jobs:
           flutter config --no-enable-swift-package-manager
 
           echo "========================================"
+          echo "FLUTTER VERSION"
+          echo "========================================"
+
+          flutter --version
+
+          echo "========================================"
           echo "FLUTTER CONFIG"
           echo "========================================"
 
           flutter config
-
 
       # =========================================================
       # 5. إعداد بيانات Mapbox الاختيارية
@@ -142,12 +151,11 @@ jobs:
       - name: Configure Mapbox Credentials (Optional)
         env:
           SDK_REGISTRY_TOKEN: ${{ secrets.SDK_REGISTRY_TOKEN }}
-
+        shell: bash
         run: |
           set -e
 
           if [ -n "$SDK_REGISTRY_TOKEN" ]; then
-
             cat > "$HOME/.netrc" <<EOF
           machine api.mapbox.com
           login mapbox
@@ -157,19 +165,16 @@ jobs:
             chmod 600 "$HOME/.netrc"
 
             echo "Mapbox SDK credentials configured."
-
           else
-
             echo "No SDK_REGISTRY_TOKEN provided."
             echo "Continuing with default configuration."
-
           fi
-
 
       # =========================================================
       # 6. تنزيل Dependencies
       # =========================================================
       - name: Install Flutter Dependencies
+        shell: bash
         run: |
           set -e
 
@@ -179,11 +184,11 @@ jobs:
 
           flutter pub get
 
-
       # =========================================================
       # 7. تنظيف بيئة iOS
       # =========================================================
       - name: Clean iOS Build
+        shell: bash
         run: |
           set -e
 
@@ -194,22 +199,18 @@ jobs:
           flutter clean
 
           rm -rf build/ios_build
-
           rm -rf ios/Pods
-
           rm -rf ios/.symlinks
-
           rm -rf ios/Flutter/ephemeral
-
           rm -f ios/Podfile.lock
 
           flutter pub get
-
 
       # =========================================================
       # 8. التحقق من ملفات مشروع iOS
       # =========================================================
       - name: Verify iOS Project
+        shell: bash
         run: |
           set -e
 
@@ -244,12 +245,8 @@ jobs:
 
           echo "iOS project files verified."
 
-
       # =========================================================
       # 9. تجهيز مشروع iOS وحقن Dart Defines
-      #
-      # SPM معطل قبل هذه الخطوة.
-      # Flutter سيستخدم CocoaPods.
       # =========================================================
       - name: Prepare iOS Project
         env:
@@ -257,22 +254,12 @@ jobs:
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
-
+        shell: bash
         run: |
           set -e
 
           echo "========================================"
           echo "PREPARING IOS PROJECT"
-          echo "========================================"
-
-          echo "========================================"
-          echo "VERIFYING SWIFT PACKAGE MANAGER STATUS"
-          echo "========================================"
-
-          flutter config
-
-          echo "========================================"
-          echo "BUILDING IOS CONFIGURATION"
           echo "========================================"
 
           flutter build ios \
@@ -284,15 +271,13 @@ jobs:
             --dart-define=GOOGLE_MAPS_API_KEY="${GOOGLE_MAPS_API_KEY}" \
             --dart-define=APP_SECRET_KEY="${APP_SECRET_KEY}"
 
-          echo "========================================"
-          echo "FLUTTER IOS PROJECT PREPARED"
-          echo "========================================"
-
+          echo "Flutter iOS project prepared successfully."
 
       # =========================================================
       # 10. تثبيت CocoaPods
       # =========================================================
       - name: Install CocoaPods Dependencies
+        shell: bash
         run: |
           set -e
 
@@ -323,11 +308,11 @@ jobs:
 
           echo "Pods installed successfully."
 
-
       # =========================================================
       # 11. بناء تطبيق iOS Release بدون Codesign
       # =========================================================
       - name: Build iOS Release
+        shell: bash
         run: |
           set +e
 
@@ -336,6 +321,12 @@ jobs:
           echo "========================================"
           echo "STARTING XCODEBUILD"
           echo "========================================"
+
+          echo "Xcode:"
+          xcodebuild -version
+
+          echo "iOS SDK:"
+          xcrun --sdk iphoneos --show-sdk-version
 
           xcodebuild \
             -workspace ios/Runner.xcworkspace \
@@ -360,7 +351,6 @@ jobs:
           echo "========================================"
 
           if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
-
             echo "========================================"
             echo "ERRORS FOUND IN BUILD LOG"
             echo "========================================"
@@ -376,15 +366,14 @@ jobs:
             tail -n 150 build/ios_build.log || true
 
             exit "$BUILD_EXIT_CODE"
-
           fi
-
 
       # =========================================================
       # 12. العثور على Runner.app
       # =========================================================
       - name: Locate Runner.app
         if: success()
+        shell: bash
         run: |
           set -e
 
@@ -395,7 +384,6 @@ jobs:
           APP_PATH="build/ios_build/Build/Products/Release-iphoneos/Runner.app"
 
           if [ ! -d "$APP_PATH" ]; then
-
             echo "Runner.app not found at default path."
             echo "Searching derived data..."
 
@@ -403,13 +391,10 @@ jobs:
               -type d \
               -name "Runner.app" \
               | head -n 1)
-
           fi
 
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-
             echo "ERROR: Runner.app was not found."
-
             echo "Available .app files:"
 
             find build/ios_build \
@@ -418,7 +403,6 @@ jobs:
               -print || true
 
             exit 1
-
           fi
 
           echo "Found Runner.app at:"
@@ -426,12 +410,12 @@ jobs:
 
           echo "$APP_PATH" > runner_app_path.txt
 
-
       # =========================================================
       # 13. تحزيم Runner.app و Runner.ipa
       # =========================================================
       - name: Package Unsigned IPA and Runner.app
         if: success()
+        shell: bash
         run: |
           set -e
 
@@ -441,9 +425,6 @@ jobs:
           echo "PACKAGING IOS ARTIFACTS"
           echo "========================================"
 
-          # -------------------------------------------------------
-          # Runner.app.zip
-          # -------------------------------------------------------
           echo "Creating Runner.app.zip..."
 
           rm -f Runner.app.zip
@@ -456,12 +437,7 @@ jobs:
             "$APP_PATH" \
             Runner.app.zip
 
-
-          # -------------------------------------------------------
-          # Runner.ipa
-          # -------------------------------------------------------
           rm -rf ipa_work
-
           rm -f Runner.ipa
 
           mkdir -p "ipa_work/Payload"
@@ -472,10 +448,6 @@ jobs:
             "$APP_PATH" \
             "ipa_work/Payload/Runner.app"
 
-
-          # -------------------------------------------------------
-          # التحقق من الملفات الأساسية
-          # -------------------------------------------------------
           if [ ! -f "ipa_work/Payload/Runner.app/Runner" ]; then
             echo "ERROR: Runner executable does not exist."
             exit 1
@@ -486,10 +458,6 @@ jobs:
             exit 1
           fi
 
-
-          # -------------------------------------------------------
-          # إنشاء IPA
-          # -------------------------------------------------------
           echo "Packaging Runner.ipa..."
 
           cd ipa_work
@@ -506,10 +474,6 @@ jobs:
 
           rm -rf ipa_work
 
-
-          # =======================================================
-          # فحص IPA
-          # =======================================================
           echo "========================================"
           echo "VERIFYING RUNNER.IPA"
           echo "========================================"
@@ -530,7 +494,6 @@ jobs:
           echo "Runner.ipa created successfully."
           echo "Runner.app.zip created successfully."
 
-
       # =========================================================
       # 14. رفع سجل البناء
       # =========================================================
@@ -539,11 +502,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iOS-Build-Log
-          path: |
-            build/ios_build.log
+          path: build/ios_build.log
           if-no-files-found: ignore
           retention-days: 14
-
 
       # =========================================================
       # 15. رفع IPA
@@ -556,7 +517,6 @@ jobs:
           path: Runner.ipa
           if-no-files-found: error
           retention-days: 14
-
 
       # =========================================================
       # 16. رفع Runner.app
