@@ -37,6 +37,8 @@ jobs:
 
           XCODE_PATH=""
 
+          # نفحص Xcode المثبت فعليًا، من الأحدث إلى الأقدم،
+          # ونختار أول نسخة تحتوي على iPhoneOS SDK صالح.
           while IFS= read -r candidate; do
             [ -z "$candidate" ] && continue
 
@@ -116,8 +118,10 @@ jobs:
       # =========================================================
       # 4. إعداد Flutter
       #
+      # مهم:
       # Flutter 3.47.x يفعّل Swift Package Manager افتراضيًا.
-      # المشروع يعتمد على CocoaPods.
+      # المشروع يعتمد على CocoaPods، وخصوصًا مع
+      # google_maps_flutter_ios، لذلك نعطّل SPM صراحة.
       # =========================================================
       - name: Configure Flutter
         shell: bash
@@ -411,7 +415,81 @@ jobs:
           echo "$APP_PATH" > runner_app_path.txt
 
       # =========================================================
-      # 13. تحزيم Runner.app و Runner.ipa
+      # 13. التحقق من أيقونة التطبيق داخل Runner.app
+      # =========================================================
+      - name: Verify App Icon in Runner.app
+        if: success()
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "VERIFYING APP ICON IN RUNNER.APP"
+          echo "========================================"
+
+          APP_PATH=$(cat runner_app_path.txt)
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: Runner.app does not exist."
+            exit 1
+          fi
+
+          if [ ! -f "$APP_PATH/Info.plist" ]; then
+            echo "ERROR: Runner.app/Info.plist was not found."
+            exit 1
+          fi
+
+          if [ ! -f "$APP_PATH/Assets.car" ]; then
+            echo "ERROR: Assets.car was not found inside Runner.app."
+            echo "The asset catalog may not have been compiled into the app."
+            exit 1
+          fi
+
+          echo "Assets.car found: OK"
+
+          echo "----------------------------------------"
+          echo "Checking CFBundleIconName"
+          echo "----------------------------------------"
+
+          ICON_NAME=$(
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "$APP_PATH/Info.plist" 2>/dev/null || true
+          )
+
+          if [ "$ICON_NAME" = "AppIcon" ]; then
+            echo "CFBundleIconName = AppIcon : OK"
+          else
+            echo "WARNING: CFBundleIconName is '$ICON_NAME'"
+            echo "Full icon-related Info.plist entries:"
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIcons" "$APP_PATH/Info.plist" 2>/dev/null || true
+          fi
+
+          echo "----------------------------------------"
+          echo "Inspecting compiled Assets.car"
+          echo "----------------------------------------"
+
+          if xcrun assetutil --info "$APP_PATH/Assets.car" > build/app_assets_info.json 2>&1; then
+            if grep -q "AppIcon" build/app_assets_info.json; then
+              echo "AppIcon found inside compiled Assets.car : OK"
+            else
+              echo "WARNING: AppIcon was not explicitly found in assetutil output."
+            fi
+          else
+            echo "WARNING: assetutil could not inspect Assets.car."
+          fi
+
+          echo "----------------------------------------"
+          echo "Source AppIcon configuration"
+          echo "----------------------------------------"
+
+          grep -n "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" \
+            ios/Runner.xcodeproj/project.pbxproj || true
+
+          echo "========================================"
+          echo "APP ICON VERIFICATION FINISHED"
+          echo "========================================"
+
+      # =========================================================
+      # 14. تحزيم Runner.app و Runner.ipa
       # =========================================================
       - name: Package Unsigned IPA and Runner.app
         if: success()
@@ -425,6 +503,9 @@ jobs:
           echo "PACKAGING IOS ARTIFACTS"
           echo "========================================"
 
+          # -------------------------------------------------------
+          # Runner.app.zip
+          # -------------------------------------------------------
           echo "Creating Runner.app.zip..."
 
           rm -f Runner.app.zip
@@ -437,6 +518,9 @@ jobs:
             "$APP_PATH" \
             Runner.app.zip
 
+          # -------------------------------------------------------
+          # Runner.ipa
+          # -------------------------------------------------------
           rm -rf ipa_work
           rm -f Runner.ipa
 
@@ -448,6 +532,9 @@ jobs:
             "$APP_PATH" \
             "ipa_work/Payload/Runner.app"
 
+          # -------------------------------------------------------
+          # التحقق من الملفات الأساسية
+          # -------------------------------------------------------
           if [ ! -f "ipa_work/Payload/Runner.app/Runner" ]; then
             echo "ERROR: Runner executable does not exist."
             exit 1
@@ -458,6 +545,9 @@ jobs:
             exit 1
           fi
 
+          # -------------------------------------------------------
+          # إنشاء IPA
+          # -------------------------------------------------------
           echo "Packaging Runner.ipa..."
 
           cd ipa_work
@@ -474,6 +564,9 @@ jobs:
 
           rm -rf ipa_work
 
+          # =======================================================
+          # فحص IPA
+          # =======================================================
           echo "========================================"
           echo "VERIFYING RUNNER.IPA"
           echo "========================================"
