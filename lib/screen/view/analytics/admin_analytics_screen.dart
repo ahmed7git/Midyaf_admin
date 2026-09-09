@@ -33,7 +33,7 @@ class AdminAnalyticsScreen extends StatelessWidget {
         elevation: 0,
         scrolledUnderElevation: 0,
         title: Text(
-          "مركز الإحصائيات والتحليلات",
+          "مركز الإحصائيات والتحليلاًت",
           style: TextStyle(
             fontFamily: 'IBMPlexSansArabic',
             fontSize: 16.sp,
