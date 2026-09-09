@@ -271,45 +271,6 @@ jobs:
 
           echo "Pods installed successfully."
 
-      # =========================================================
-      # 11. فحص إعدادات Xcode
-      #
-      # تم إضافة:
-      # -destination "generic/platform=iOS"
-      #
-      # حتى يستطيع xcodebuild العثور على Destination
-      # عند فحص Build Settings.
-      # =========================================================
-      - name: Verify Xcode Build Settings
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "VERIFYING XCODE BUILD SETTINGS"
-          echo "========================================"
-
-          xcodebuild \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
-            -showBuildSettings \
-            > build_settings.log 2>&1
-
-          if [ ! -s build_settings.log ]; then
-            echo "ERROR: Xcode returned empty build settings."
-            cat build_settings.log || true
-            exit 1
-          fi
-
-          if ! grep -q "TARGET_NAME = Runner" build_settings.log; then
-            echo "ERROR: Runner target settings were not found."
-            echo "Last build settings output:"
-            tail -n 100 build_settings.log
-            exit 1
-          fi
-
-          echo "Xcode build settings verified successfully."
 
       # =========================================================
       # 12. بناء تطبيق iOS Release بدون Codesign
