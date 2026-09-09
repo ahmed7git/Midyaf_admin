@@ -1,0 +1,337 @@
+name: Build iOS (No Codesign)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build iOS IPA & Runner.app (Unsigned)
+    runs-on: macos-15
+
+    steps:
+      # =========================================================
+      # 1. استرجاع الكود المصدري (Checkout)
+      # =========================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================
+      # 2. تحديد بيئة Xcode المتوافقة تلقائياً
+      # =========================================================
+      - name: Select Xcode Toolchain
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "DETECTING XCODE VERSION"
+          echo "========================================"
+
+          if [ -d "/Applications/Xcode_16.2.app" ]; then
+            XCODE_PATH="/Applications/Xcode_16.2.app"
+          elif [ -d "/Applications/Xcode_16.1.app" ]; then
+            XCODE_PATH="/Applications/Xcode_16.1.app"
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            XCODE_PATH="/Applications/Xcode_16.0.app"
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            XCODE_PATH="/Applications/Xcode_15.4.app"
+          elif [ -d "/Applications/Xcode.app" ]; then
+            XCODE_PATH="/Applications/Xcode.app"
+          else
+            XCODE_PATH=$(find /Applications -maxdepth 1 -name "Xcode*.app" | sort -V | tail -n 1)
+          fi
+
+          if [ -z "$XCODE_PATH" ] || [ ! -d "$XCODE_PATH" ]; then
+            echo "ERROR: No valid Xcode installation found."
+            ls -la /Applications/ | grep -i Xcode || true
+            exit 1
+          fi
+
+          echo "Selected Xcode: $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+
+          echo "========================================"
+          echo "XCODE DETAILS"
+          echo "========================================"
+          xcode-select -p
+          xcodebuild -version
+
+          echo "========================================"
+          echo "SWIFT VERSION"
+          echo "========================================"
+          swift --version
+
+          echo "========================================"
+          echo "IOS SDK VERSION"
+          echo "========================================"
+          xcodebuild -showsdks | grep -i "iOS" || true
+
+      # =========================================================
+      # 3. تثبيت وضبط Flutter
+      # =========================================================
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Configure Flutter
+        run: |
+          set -e
+          git config --global http.postBuffer 1048576000
+          git config --global http.version HTTP/1.1
+          flutter config --enable-swift-package-manager
+
+          echo "========================================"
+          echo "FLUTTER VERSION"
+          echo "========================================"
+          flutter --version
+
+      # =========================================================
+      # 4. إعداد بيانات Mapbox الاختيارية (في حال وجود Registry Token)
+      # =========================================================
+      - name: Configure Mapbox Credentials (Optional)
+        env:
+          SDK_REGISTRY_TOKEN: ${{ secrets.SDK_REGISTRY_TOKEN }}
+        run: |
+          if [ -n "$SDK_REGISTRY_TOKEN" ]; then
+            cat > "$HOME/.netrc" <<EOF
+          machine api.mapbox.com
+          login mapbox
+          password ${SDK_REGISTRY_TOKEN}
+          EOF
+            chmod 600 "$HOME/.netrc"
+            echo "Mapbox SDK credentials configured."
+          else
+            echo "No SDK_REGISTRY_TOKEN provided, continuing with default configuration."
+          fi
+
+      # =========================================================
+      # 5. تنزيل حزم فلاتر (Dependencies)
+      # =========================================================
+      - name: Install Flutter Dependencies
+        run: |
+          set -e
+          flutter pub get
+
+      # =========================================================
+      # 6. تنظيف بيئة البناء القديمة
+      # =========================================================
+      - name: Clean iOS Build
+        run: |
+          set -e
+          echo "Cleaning iOS build artifacts..."
+          flutter clean
+          rm -rf build/ios_build
+          rm -rf ios/Pods
+          rm -rf ios/.symlinks
+          rm -f ios/Podfile.lock
+          flutter pub get
+
+      # =========================================================
+      # 7. تجهيز مشروع iOS وحقن المتغيرات (Config-Only)
+      # =========================================================
+      - name: Prepare iOS Project
+        env:
+          SERVER_URL: ${{ secrets.SERVER_URL }}
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+        run: |
+          set -e
+          echo "========================================"
+          echo "PREPARING IOS PROJECT WITH DART DEFINES"
+          echo "========================================"
+
+          flutter build ios \
+            --release \
+            --no-codesign \
+            --config-only \
+            --dart-define=SERVER_URL="${SERVER_URL:-https://wicmn.alwaysdata.net/delever}" \
+            --dart-define=MAPBOX_ACCESS_TOKEN="${MAPBOX_ACCESS_TOKEN:-pk.eyJ1Ijoid2ljbW4iLCJhIjoiY21ydnBhNXN1MHJjaTJ4c2NsMTVzZnByMSJ9.r4GmKGZtnUX9AOVwcsPHxQ}" \
+            --dart-define=GOOGLE_MAPS_API_KEY="${GOOGLE_MAPS_API_KEY}" \
+            --dart-define=APP_SECRET_KEY="${APP_SECRET_KEY}"
+
+          echo "Flutter iOS project prepared successfully."
+
+      # =========================================================
+      # 8. تثبيت CocoaPods
+      # =========================================================
+      - name: Install CocoaPods Dependencies
+        run: |
+          set -e
+          echo "========================================"
+          echo "INSTALLING COCOAPODS"
+          echo "========================================"
+
+          cd ios
+          pod install --no-repo-update
+          cd ..
+
+          if [ ! -f "ios/Podfile.lock" ]; then
+            echo "ERROR: Podfile.lock was not created."
+            exit 1
+          fi
+
+          if [ ! -d "ios/Pods" ]; then
+            echo "ERROR: Pods directory was not created."
+            exit 1
+          fi
+
+          echo "Pods installed successfully."
+
+      # =========================================================
+      # 9. بناء تطبيق iOS Release (No Codesign) عبر xcodebuild
+      # =========================================================
+      - name: Build iOS Release
+        run: |
+          set +e
+          mkdir -p build
+
+          echo "========================================"
+          echo "STARTING XCODEBUILD (RELEASE)"
+          echo "========================================"
+
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/ios_build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            PODS_PODFILE_DIR_PATH="$GITHUB_WORKSPACE/ios" \
+            PODS_ROOT="$GITHUB_WORKSPACE/ios/Pods" \
+            -skipPackagePluginValidation \
+            -showBuildTimingSummary \
+            2>&1 | tee build/ios_build.log
+
+          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+
+          echo "========================================"
+          echo "BUILD RESULT: Exit code $BUILD_EXIT_CODE"
+          echo "========================================"
+
+          if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
+            echo "Searching for errors in build log:"
+            grep -nE "error:|fatal error:|BUILD FAILED|Command .* failed|SwiftCompile.*failed|CompileSwift.*failed" \
+              build/ios_build.log || true
+            echo "Last 100 log lines:"
+            tail -n 100 build/ios_build.log || true
+            exit "$BUILD_EXIT_CODE"
+          fi
+
+      # =========================================================
+      # 10. تحزيم واستخراج Runner.app و Runner.ipa
+      # =========================================================
+      - name: Package Unsigned IPA and Runner.app
+        if: success()
+        run: |
+          set -e
+          echo "========================================"
+          echo "LOCATING RUNNER.APP"
+          echo "========================================"
+
+          APP_PATH="build/ios_build/Build/Products/Release-iphoneos/Runner.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Runner.app not found at default path, searching derived data..."
+            APP_PATH=$(find build/ios_build -type d -name "Runner.app" | head -n 1)
+          fi
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: Runner.app was not found anywhere in build output."
+            find build/ios_build -type d -name "*.app" -print || true
+            exit 1
+          fi
+
+          echo "Found Runner.app at: $APP_PATH"
+
+          # 1. إنشاء نسخة مضغوطة مباشرة لملف Runner.app
+          echo "Creating Runner.app.zip..."
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" Runner.app.zip
+
+          # 2. إنشاء حزمة IPA الرسمية (Payload/Runner.app)
+          rm -rf ipa_work
+          rm -f Runner.ipa
+          mkdir -p "ipa_work/Payload"
+
+          echo "Copying Runner.app into ipa_work/Payload/..."
+          ditto "$APP_PATH" "ipa_work/Payload/Runner.app"
+
+          # التحقق من الملفات الأساسية
+          if [ ! -f "ipa_work/Payload/Runner.app/Runner" ]; then
+            echo "ERROR: Runner binary executable does not exist inside Payload."
+            exit 1
+          fi
+
+          if [ ! -f "ipa_work/Payload/Runner.app/Info.plist" ]; then
+            echo "ERROR: Info.plist does not exist inside Payload."
+            exit 1
+          fi
+
+          echo "Packaging Runner.ipa..."
+          cd ipa_work
+          ditto -c -k --sequesterRsrc --keepParent Payload ../Runner.ipa
+          cd ..
+          rm -rf ipa_work
+
+          # فحص سلامة أرشيف IPA
+          echo "========================================"
+          echo "VERIFYING RUNNER.IPA INTEGRITY"
+          echo "========================================"
+          ls -lh Runner.ipa Runner.app.zip
+          unzip -t Runner.ipa
+
+          if ! unzip -l Runner.ipa | grep -q "Payload/Runner.app/Runner"; then
+            echo "ERROR: Runner binary not found in Runner.ipa!"
+            exit 1
+          fi
+
+          echo "SUCCESS: Runner.ipa and Runner.app.zip verified."
+
+      # =========================================================
+      # 11. رفع سجلات البناء (Build Log)
+      # =========================================================
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-Build-Log
+          path: build/ios_build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # =========================================================
+      # 12. رفع حزمة Runner.ipa
+      # =========================================================
+      - name: Upload IPA Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runner-ipa
+          path: Runner.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      # =========================================================
+      # 13. رفع حزمة Runner.app المباشرة
+      # =========================================================
+      - name: Upload Runner.app Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runner-app
+          path: Runner.app.zip
+          if-no-files-found: error
+          retention-days: 14
