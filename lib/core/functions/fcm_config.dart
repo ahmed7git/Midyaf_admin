@@ -30,8 +30,17 @@ Future<void> setupFCMChannels() async {
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('@mipmap/ic_launcher');
 
+  // ✅ إضافة إعدادات iOS
+  const DarwinInitializationSettings initializationSettingsIOS =
+      DarwinInitializationSettings(
+    requestAlertPermission: false,
+    requestBadgePermission: false,
+    requestSoundPermission: false,
+  );
+
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
+    iOS: initializationSettingsIOS, // ✅ مضاف
   );
 
   await flutterLocalNotificationsPlugin.initialize(
@@ -78,12 +87,26 @@ Future<void> requestPermissionAndSetupFCM() async {
 
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
-  await FirebaseMessaging.instance.subscribeToTopic("delivery");
-  await FirebaseMessaging.instance.subscribeToTopic("admins");
+  // ✅ لف subscribeToTopic بـ try-catch لتجنب التجمد على iOS
+  try {
+    await FirebaseMessaging.instance
+        .subscribeToTopic("delivery")
+        .timeout(const Duration(seconds: 5));
+    await FirebaseMessaging.instance
+        .subscribeToTopic("admins")
+        .timeout(const Duration(seconds: 5));
+  } catch (_) {}
 }
 
+/// ✅ الاشتراك في topic الخاص بالمستخدم مع timeout لتجنب التجمد على iOS
 Future<void> subscribeToUserTopic(String userid) async {
-  await FirebaseMessaging.instance.subscribeToTopic("admins$userid");
+  try {
+    await FirebaseMessaging.instance
+        .subscribeToTopic("admins$userid")
+        .timeout(const Duration(seconds: 5));
+  } catch (_) {
+    // تجاهل الخطأ — الاشتراك غير حيوي لإكمال تسجيل الدخول
+  }
 }
 
 /// تحديث شاشات الطلبات ولوحة التحكم تلقائياً وفورياً عند استلام أي إشعار طلب
